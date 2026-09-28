@@ -1,55 +1,88 @@
 //@version=5
-indicator("Liquidity Sweep", overlay=true, max_lines_count=500)
+indicator("Liquidity Sweep Pro", overlay=true, max_lines_count=500)
 
-// settings
 len = input.int(5, "Swing length")
 maxAge = input.int(50, "Max bars since swing")
 useVol = input.bool(true, "Volume filter")
-volLen = input.int(20, "Volume MA length")
 volMult = input.float(1.5, "Volume multiplier")
-drawLines = input.bool(true, "Draw lines")
+usePD = input.bool(true, "Prev day high/low")
+fwdBars = input.int(10, "Stats: bars to check")
+tgtPct = input.float(1.0, "Stats: reversal %")
 
-// find swing highs and lows
-ph = ta.pivothigh(high, len, len)
-pl = ta.pivotlow(low, len, len)
-
-var float swingHigh = na
-var int swingHighBar = na
-var float swingLow = na
-var int swingLowBar = na
-
-if not na(ph)
-    swingHigh := ph
-    swingHighBar := bar_index - len
-if not na(pl)
-    swingLow := pl
-    swingLowBar := bar_index - len
-
-// volume check
-volAvg = ta.sma(volume, volLen)
+volAvg = ta.sma(volume, 20)
 volOk = not useVol or na(volume) or volume > volAvg * volMult
 
-// sweep = wick through the level but close back inside
-sweepHigh = not na(swingHigh) and bar_index - swingHighBar <= maxAge and high > swingHigh and close < swingHigh and volOk
-sweepLow = not na(swingLow) and bar_index - swingLowBar <= maxAge and low < swingLow and close > swingLow and volOk
+// swings
+ph = ta.pivothigh(high, len, len)
+pl = ta.pivotlow(low, len, len)
+var float hi = na
+var int hiBar = na
+var float lo = na
+var int loBar = na
+if not na(ph)
+    hi := ph
+    hiBar := bar_index - len
+if not na(pl)
+    lo := pl
+    loBar := bar_index - len
 
-// reset level after sweep or real breakout
+sweepHigh = not na(hi) and bar_index - hiBar <= maxAge and high > hi and close < hi and volOk
+sweepLow = not na(lo) and bar_index - loBar <= maxAge and low < lo and close > lo and volOk
+
 if sweepHigh
-    if drawLines
-        line.new(swingHighBar, swingHigh, bar_index, swingHigh, color=color.red, style=line.style_dashed)
-    swingHigh := na
-else if close > swingHigh
-    swingHigh := na
-
+    line.new(hiBar, hi, bar_index, hi, color=color.red, style=line.style_dashed)
+if sweepHigh or close > hi
+    hi := na
 if sweepLow
-    if drawLines
-        line.new(swingLowBar, swingLow, bar_index, swingLow, color=color.green, style=line.style_dashed)
-    swingLow := na
-else if close < swingLow
-    swingLow := na
+    line.new(loBar, lo, bar_index, lo, color=color.green, style=line.style_dashed)
+if sweepLow or close < lo
+    lo := na
 
-plotshape(sweepHigh, "Sweep high", shape.triangledown, location.abovebar, color.red, size=size.small)
-plotshape(sweepLow, "Sweep low", shape.triangleup, location.belowbar, color.green, size=size.small)
+// prev day high/low
+pdH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdL = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+var pdDoneH = false
+var pdDoneL = false
+if ta.change(time("D")) != 0
+    pdDoneH := false
+    pdDoneL := false
+pdhSweep = usePD and not pdDoneH and high > pdH and close < pdH
+pdlSweep = usePD and not pdDoneL and low < pdL and close > pdL
+if pdhSweep or close > pdH
+    pdDoneH := true
+if pdlSweep or close < pdL
+    pdDoneL := true
+plot(usePD ? pdH : na, "PDH", color.orange, style=plot.style_stepline)
+plot(usePD ? pdL : na, "PDL", color.orange, style=plot.style_stepline)
 
-alertcondition(sweepHigh, "Sweep high", "Liquidity sweep above high on {{ticker}}")
-alertcondition(sweepLow, "Sweep low", "Liquidity sweep below low on {{ticker}}")
+bear = sweepHigh or pdhSweep
+bull = sweepLow or pdlSweep
+
+// stats - only tracks the latest sweep
+var float entry = na
+var int start = na
+var dir = 0
+var total = 0
+var wins = 0
+if dir != 0
+    hit = dir == -1 ? low <= entry * (1 - tgtPct / 100) : high >= entry * (1 + tgtPct / 100)
+    if hit or bar_index - start >= fwdBars
+        total += 1
+        wins += hit ? 1 : 0
+        dir := 0
+if bear or bull
+    entry := close
+    start := bar_index
+    dir := bear ? -1 : 1
+
+var tbl = table.new(position.top_right, 2, 2, bgcolor=color.new(color.black, 20))
+if barstate.islast
+    table.cell(tbl, 0, 0, "Sweeps", text_color=color.white)
+    table.cell(tbl, 1, 0, str.tostring(total), text_color=color.white)
+    table.cell(tbl, 0, 1, "Reversed", text_color=color.white)
+    table.cell(tbl, 1, 1, total > 0 ? str.tostring(wins * 100.0 / total, "#.#") + "%" : "-", text_color=color.lime)
+
+plotshape(bear, "Sweep high", shape.triangledown, location.abovebar, color.red, size=size.small)
+plotshape(bull, "Sweep low", shape.triangleup, location.belowbar, color.green, size=size.small)
+alertcondition(bear, "Sweep high", "Sweep above high on {{ticker}}")
+alertcondition(bull, "Sweep low", "Sweep below low on {{ticker}}")
