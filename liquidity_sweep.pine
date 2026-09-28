@@ -1,0 +1,65 @@
+//@version=5
+// Liquidity Sweep Detector
+// Flags candles that wick beyond a recent swing high/low (grabbing resting stops)
+// and then close back inside the range — a classic stop-hunt / liquidity grab.
+indicator("Liquidity Sweep Detector", shorttitle="LiqSweep", overlay=true, max_lines_count=500)
+
+// ─── Inputs ────────────────────────────────────────────────────────────────
+pivotLen   = input.int(5,     "Swing Length",            minval=1,  tooltip="Bars on each side required to confirm a swing high/low")
+maxAge     = input.int(50,    "Max Level Age (bars)",    minval=5,  tooltip="Ignore swing levels older than this")
+useVolume  = input.bool(true, "Require volume spike")
+volLen     = input.int(20,    "Volume MA Length",        minval=1)
+volMult    = input.float(1.5, "Volume Spike Multiplier", minval=1.0, step=0.1)
+showLevels = input.bool(true, "Draw swept levels")
+
+// ─── Swing detection ───────────────────────────────────────────────────────
+// Pivots are confirmed pivotLen bars after they form (no repainting).
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low,  pivotLen, pivotLen)
+
+var float lastHigh    = na
+var int   lastHighBar = na
+var float lastLow     = na
+var int   lastLowBar  = na
+
+if not na(ph)
+    lastHigh    := ph
+    lastHighBar := bar_index - pivotLen
+if not na(pl)
+    lastLow    := pl
+    lastLowBar := bar_index - pivotLen
+
+// ─── Volume filter ─────────────────────────────────────────────────────────
+// Computed every bar (outside conditions) so the MA stays consistent.
+volMA = ta.sma(volume, volLen)
+volOk = not useVolume or na(volume) or volume > volMA * volMult
+
+// ─── Sweep conditions ──────────────────────────────────────────────────────
+// Bearish sweep: wick above swing high, close back below it (buy-side liquidity taken).
+// Bullish sweep: wick below swing low, close back above it (sell-side liquidity taken).
+bearSweep = not na(lastHigh) and (bar_index - lastHighBar) <= maxAge and high > lastHigh and close < lastHigh and volOk
+bullSweep = not na(lastLow)  and (bar_index - lastLowBar)  <= maxAge and low  < lastLow  and close > lastLow  and volOk
+
+// ─── Level housekeeping ────────────────────────────────────────────────────
+// Once a level is swept or cleanly broken, it is consumed and no longer tracked.
+if bearSweep
+    if showLevels
+        line.new(lastHighBar, lastHigh, bar_index, lastHigh, color=color.red, style=line.style_dashed)
+    lastHigh := na
+else if not na(lastHigh) and close > lastHigh
+    lastHigh := na
+
+if bullSweep
+    if showLevels
+        line.new(lastLowBar, lastLow, bar_index, lastLow, color=color.green, style=line.style_dashed)
+    lastLow := na
+else if not na(lastLow) and close < lastLow
+    lastLow := na
+
+// ─── Visuals ───────────────────────────────────────────────────────────────
+plotshape(bearSweep, "Bearish Sweep", shape.triangledown, location.abovebar, color.red,   size=size.small)
+plotshape(bullSweep, "Bullish Sweep", shape.triangleup,   location.belowbar, color.green, size=size.small)
+
+// ─── Alerts ────────────────────────────────────────────────────────────────
+alertcondition(bearSweep, "Bearish Liquidity Sweep", "Buy-side liquidity swept on {{ticker}} ({{interval}}) at {{close}}")
+alertcondition(bullSweep, "Bullish Liquidity Sweep", "Sell-side liquidity swept on {{ticker}} ({{interval}}) at {{close}}")
